@@ -1,18 +1,27 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
-import { getOrCreateEditorState, saveAnnotations, savePageOrder } from "@/server/editorStates";
+import { getDocumentById } from "@/server/documents";
+import { getOrCreateEditorState, saveEditorState } from "@/server/editorStates";
+import { getSessionUser } from "@/lib/session";
 import type { Annotation, EditorState } from "@/types";
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<EditorState | { error: string }>
 ) {
+  const user = await getSessionUser(req, res);
+  if (!user) return res.status(401).json({ error: "Not authenticated" });
+
   const documentId = req.query.documentId;
   if (typeof documentId !== "string") {
     return res.status(400).json({ error: "Invalid documentId" });
   }
 
   const db = getDb();
+
+  // Verify the document exists and belongs to the requesting user
+  const document = await getDocumentById(db, documentId, user.id);
+  if (!document) return res.status(404).json({ error: "Document not found" });
 
   if (req.method === "GET") {
     try {
@@ -36,10 +45,7 @@ export default async function handler(
       if (!Array.isArray(pageOrder)) {
         return res.status(400).json({ error: "pageOrder must be an array" });
       }
-
-      // Save both fields; second write returns the final state
-      await saveAnnotations(db, documentId, annotations);
-      const state = await savePageOrder(db, documentId, pageOrder);
+      const state = await saveEditorState(db, documentId, annotations, pageOrder);
       if (!state) return res.status(404).json({ error: "Editor state not found" });
       return res.status(200).json(state);
     } catch (err) {

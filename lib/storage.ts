@@ -1,70 +1,106 @@
 /**
  * Storage abstraction layer.
  *
- * LocalStorageProvider  — writes to /uploads (development)
- * To add S3/R2 later: implement StorageProvider, then swap getStorage().
+ * Two providers are available; select via the STORAGE_PROVIDER env var:
+ *
+ *   STORAGE_PROVIDER=local   (default) — saves to ./uploads/ on the server
+ *   STORAGE_PROVIDER=s3      — uploads to Amazon S3 or Cloudflare R2
+ *
+ * The value stored in `documents.file_path` is always the storage key
+ * (just the filename, e.g. "550e8400.pdf").  The key is the same for
+ * both providers, so switching providers only requires re-uploading files.
+ *
+ * To add a new provider (GCS, Azure Blob, etc.) implement StorageProvider
+ * and add a branch in getStorage().
  */
 
 import path from "path";
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
 
+// ---------------------------------------------------------------------------
+// Interface
+// ---------------------------------------------------------------------------
+
 export interface StorageProvider {
   /**
-   * Move/copy a file from a temporary source path into permanent storage.
-   * Returns the stored path (used as `file_path` in the DB).
+   * Upload file bytes under the given key.
+   * `key` is persisted in the database as `file_path`.
    */
-  saveFile(sourcePath: string, destFilename: string): Promise<string>;
+  uploadFile(key: string, data: Buffer, contentType: string): Promise<void>;
 
   /** Delete a stored file. Silently ignores missing files. */
-  deleteFile(storedPath: string): Promise<void>;
+  deleteFile(key: string): Promise<void>;
 
   /**
-   * Resolve a stored path to a URL the Next.js API can serve.
-   * For local storage this is /api/files/<filename>.
-   * For S3 this would be a signed URL or public CDN URL.
+   * Return a URL the browser can use to fetch the file.
+   *
+   * Local:  /api/files/<key>  (served by the Next.js dev route)
+   * S3/R2 public bucket:  ${S3_PUBLIC_URL}/<key>
+   * S3/R2 private bucket: presigned GetObject URL (1-hour expiry)
    */
-  getServeUrl(storedPath: string): string;
+  getDownloadUrl(key: string): Promise<string>;
+
+  /**
+   * Read the raw file bytes on the server side.
+   * Used by the PDF export route to load the source PDF.
+   *
+   * Local:  reads ./uploads/<key> from disk
+   * S3/R2:  streams the object body into a Buffer
+   */
+  readFile(key: string): Promise<Buffer>;
 }
 
 // ---------------------------------------------------------------------------
-// Local filesystem — development only
+// Local filesystem provider — development only
 // ---------------------------------------------------------------------------
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 
 class LocalStorageProvider implements StorageProvider {
   constructor() {
-    if (!existsSync(UPLOADS_DIR)) {
-      mkdirSync(UPLOADS_DIR, { recursive: true });
-    }
+    if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
   }
 
-  async saveFile(sourcePath: string, destFilename: string): Promise<string> {
-    const dest = path.join(UPLOADS_DIR, destFilename);
-    await fs.copyFile(sourcePath, dest);
-    return destFilename; // stored path is just the filename
+  async uploadFile(key: string, data: Buffer): Promise<void> {
+    await fs.writeFile(path.join(UPLOADS_DIR, key), data);
   }
 
-  async deleteFile(storedPath: string): Promise<void> {
-    await fs.unlink(path.join(UPLOADS_DIR, storedPath)).catch(() => {});
+  async deleteFile(key: string): Promise<void> {
+    await fs.unlink(path.join(UPLOADS_DIR, key)).catch(() => {});
   }
 
-  getServeUrl(storedPath: string): string {
-    return `/api/files/${encodeURIComponent(storedPath)}`;
+  async getDownloadUrl(key: string): Promise<string> {
+    return `/api/files/${encodeURIComponent(key)}`;
+  }
+
+  async readFile(key: string): Promise<Buffer> {
+    return fs.readFile(path.join(UPLOADS_DIR, key));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
 
 /**
- * Returns the active storage provider.
- * Swap the return value here when adding S3/R2:
- *   if (process.env.STORAGE === "s3") return new S3StorageProvider();
+ * Returns the active StorageProvider based on the STORAGE_PROVIDER env var.
+ *
+ * The S3 provider is loaded lazily via require() so that missing AWS SDK
+ * packages do not break the local development build.
+ *
+ * Before switching to "s3", install the required packages:
+ *   npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
  */
 export function getStorage(): StorageProvider {
-  return new LocalStorageProvider();
-}
+  const provider = process.env.STORAGE_PROVIDER ?? "local";
 
-/** Resolve a stored filename to an absolute path — local dev only. */
-export function resolveLocalPath(storedPath: string): string {
-  return path.join(UPLOADS_DIR, storedPath);
+  if (provider === "s3") {
+    // Lazy require — only evaluated when STORAGE_PROVIDER=s3
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createS3Provider } = require("./storage-s3") as typeof import("./storage-s3");
+    return createS3Provider();
+  }
+
+  return new LocalStorageProvider();
 }

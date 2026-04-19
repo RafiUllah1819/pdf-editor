@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   Stage,
   Layer,
   Rect as KonvaRect,
   Text as KonvaText,
   Image as KonvaImage,
+  Line as KonvaLine,
   Transformer,
 } from "react-konva";
 import type Konva from "konva";
@@ -35,6 +36,9 @@ const DEFAULT_FONT_SIZE = 14; // pt at scale=1.0
 const HIGHLIGHT_COLOR = "#FFFF00";
 const HIGHLIGHT_OPACITY = 0.4;
 const MIN_DRAW_SIZE = 8; // px — ignore accidental micro-drags
+const DEFAULT_STROKE_COLOR = "#1a1a1a";
+const DEFAULT_STROKE_WIDTH = 2;
+const MIN_POINT_DISTANCE = 4; // px in screen space — throttle point density
 
 // ---------------------------------------------------------------------------
 // AnnotatedPage
@@ -57,6 +61,10 @@ export default function AnnotatedPage({
   const [drawingRect, setDrawingRect] = useState<CanvasSize & { x: number; y: number } | null>(null);
   const drawStartRef = useRef<{ x: number; y: number } | null>(null);
 
+  // For freehand drawing — live points in scaled space
+  const [drawingPoints, setDrawingPoints] = useState<number[] | null>(null);
+  const isDrawingRef = useRef(false);
+
   // For inline text editing
   const [editingId, setEditingId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -67,7 +75,6 @@ export default function AnnotatedPage({
 
   // HTMLImageElement cache — one entry per image annotation
   const [imageElements, setImageElements] = useState<Map<string, HTMLImageElement>>(new Map());
-  // Tracks which annotation IDs we've already started loading (avoids duplicate loads)
   const loadedIdsRef = useRef<Set<string>>(new Set());
 
   // ── Load HTMLImageElement for each image annotation ──────────────────────
@@ -99,10 +106,15 @@ export default function AnnotatedPage({
   useEffect(() => {
     const tr = trRef.current;
     if (!tr) return;
-    const node = selectedId ? shapeRefs.current.get(selectedId) : undefined;
+    const selectedAnn = selectedId ? annotations.find((a) => a.id === selectedId) : null;
+    // Draw annotations are not resizable — skip transformer for them
+    const node =
+      selectedAnn && selectedAnn.type !== "draw"
+        ? shapeRefs.current.get(selectedId!)
+        : undefined;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedId, annotations]); // also re-run when annotations change (shape might be new)
+  }, [selectedId, annotations]);
 
   // ── Focus textarea when editing starts ────────────────────────────────────
   useEffect(() => {
@@ -114,6 +126,7 @@ export default function AnnotatedPage({
   const stageCursor =
     activeTool === "text"        ? "text"
     : activeTool === "highlight" ? "crosshair"
+    : activeTool === "draw"      ? "crosshair"
     : "default";
 
   /** Convert Konva (scaled) coordinates → normalised annotation coordinates */
@@ -155,45 +168,102 @@ export default function AnnotatedPage({
   // ── Drawing (highlight tool) ───────────────────────────────────────────────
 
   function handleBgMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (activeTool !== "highlight") return;
     const pos = e.target.getStage()!.getPointerPosition()!;
-    drawStartRef.current = pos;
-    setDrawingRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
+
+    if (activeTool === "highlight") {
+      drawStartRef.current = pos;
+      setDrawingRect({ x: pos.x, y: pos.y, width: 0, height: 0 });
+      return;
+    }
+
+    if (activeTool === "draw") {
+      isDrawingRef.current = true;
+      setDrawingPoints([pos.x, pos.y]);
+    }
   }
 
   function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (!drawStartRef.current) return;
     const pos = e.target.getStage()!.getPointerPosition()!;
-    const start = drawStartRef.current;
-    setDrawingRect({
-      x: Math.min(start.x, pos.x),
-      y: Math.min(start.y, pos.y),
-      width: Math.abs(pos.x - start.x),
-      height: Math.abs(pos.y - start.y),
-    });
+
+    if (drawStartRef.current && activeTool === "highlight") {
+      const start = drawStartRef.current;
+      setDrawingRect({
+        x: Math.min(start.x, pos.x),
+        y: Math.min(start.y, pos.y),
+        width: Math.abs(pos.x - start.x),
+        height: Math.abs(pos.y - start.y),
+      });
+      return;
+    }
+
+    if (isDrawingRef.current && activeTool === "draw") {
+      setDrawingPoints((prev) => {
+        if (!prev || prev.length < 2) return prev;
+        const lastX = prev[prev.length - 2];
+        const lastY = prev[prev.length - 1];
+        const dist = Math.sqrt((pos.x - lastX) ** 2 + (pos.y - lastY) ** 2);
+        if (dist < MIN_POINT_DISTANCE) return prev;
+        return [...prev, pos.x, pos.y];
+      });
+    }
   }
 
   function handleStageMouseUp() {
-    if (!drawingRect || !drawStartRef.current) return;
-    drawStartRef.current = null;
+    // Finish highlight
+    if (drawStartRef.current && drawingRect) {
+      drawStartRef.current = null;
+      if (drawingRect.width > MIN_DRAW_SIZE && drawingRect.height > MIN_DRAW_SIZE) {
+        const ann: Annotation = {
+          id: generateId(),
+          documentId: "",
+          page: pageNumber,
+          type: "highlight",
+          x: toNorm(drawingRect.x),
+          y: toNorm(drawingRect.y),
+          width: toNorm(drawingRect.width),
+          height: toNorm(drawingRect.height),
+          color: HIGHLIGHT_COLOR,
+          opacity: HIGHLIGHT_OPACITY,
+        };
+        onAnnotationCreate(ann);
+        onAnnotationSelect(ann.id);
+      }
+      setDrawingRect(null);
+      return;
+    }
 
-    if (drawingRect.width > MIN_DRAW_SIZE && drawingRect.height > MIN_DRAW_SIZE) {
+    // Finish freehand draw
+    if (isDrawingRef.current && drawingPoints && drawingPoints.length >= 4) {
+      isDrawingRef.current = false;
+      const normPts = drawingPoints.map(toNorm);
+      const xs = normPts.filter((_, i) => i % 2 === 0);
+      const ys = normPts.filter((_, i) => i % 2 === 1);
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const maxX = Math.max(...xs);
+      const maxY = Math.max(...ys);
       const ann: Annotation = {
         id: generateId(),
         documentId: "",
         page: pageNumber,
-        type: "highlight",
-        x: toNorm(drawingRect.x),
-        y: toNorm(drawingRect.y),
-        width: toNorm(drawingRect.width),
-        height: toNorm(drawingRect.height),
-        color: HIGHLIGHT_COLOR,
-        opacity: HIGHLIGHT_OPACITY,
+        type: "draw",
+        x: minX,
+        y: minY,
+        width: Math.max(maxX - minX, 1),
+        height: Math.max(maxY - minY, 1),
+        points: normPts,
+        strokeWidth: DEFAULT_STROKE_WIDTH,
+        color: DEFAULT_STROKE_COLOR,
+        opacity: 1,
       };
       onAnnotationCreate(ann);
       onAnnotationSelect(ann.id);
+      setDrawingPoints(null);
+      return;
     }
-    setDrawingRect(null);
+
+    isDrawingRef.current = false;
+    setDrawingPoints(null);
   }
 
   // ── Background click (text placement / deselect) ──────────────────────────
@@ -283,10 +353,23 @@ export default function AnnotatedPage({
             />
           )}
 
+          {/* In-progress freehand path */}
+          {drawingPoints && drawingPoints.length >= 4 && (
+            <KonvaLine
+              points={drawingPoints}
+              stroke={DEFAULT_STROKE_COLOR}
+              strokeWidth={DEFAULT_STROKE_WIDTH * scale}
+              lineCap="round"
+              lineJoin="round"
+              tension={0}
+              listening={false}
+            />
+          )}
+
           {/* Rendered annotations */}
           {annotations.map((ann) => {
             const isSelected = ann.id === selectedId;
-            const draggable = activeTool === "select";
+            const draggable = activeTool === "select" && ann.type !== "draw";
             const sharedProps = {
               x: ann.x * scale,
               y: ann.y * scale,
@@ -326,6 +409,40 @@ export default function AnnotatedPage({
               );
             }
 
+            if (ann.type === "text-replace") {
+              // White cover rect hides original PDF text; KonvaText shows
+              // the replacement. Both are hidden while the textarea is open.
+              return (
+                <Fragment key={ann.id}>
+                  <KonvaRect
+                    x={ann.x * scale}
+                    y={ann.y * scale}
+                    width={ann.width * scale}
+                    height={ann.height * scale}
+                    fill="white"
+                    listening={false}
+                    visible={editingId !== ann.id}
+                  />
+                  <KonvaText
+                    {...sharedProps}
+                    ref={(node) => registerShapeRef(ann.id, node)}
+                    text={ann.text ?? ""}
+                    fontSize={(ann.fontSize ?? DEFAULT_FONT_SIZE) * scale}
+                    fill={ann.color ?? "#111827"}
+                    opacity={ann.opacity ?? 1}
+                    wrap="word"
+                    visible={editingId !== ann.id}
+                    onDblClick={() => {
+                      onAnnotationSelect(ann.id);
+                      setEditingId(ann.id);
+                    }}
+                    stroke={isSelected ? "#4f46e5" : undefined}
+                    strokeWidth={isSelected ? 1 / scale : 0}
+                  />
+                </Fragment>
+              );
+            }
+
             if (ann.type === "highlight") {
               return (
                 <KonvaRect
@@ -334,6 +451,26 @@ export default function AnnotatedPage({
                   ref={(node) => registerShapeRef(ann.id, node)}
                   fill={ann.color ?? HIGHLIGHT_COLOR}
                   opacity={ann.opacity ?? HIGHLIGHT_OPACITY}
+                />
+              );
+            }
+
+            if (ann.type === "draw") {
+              const pts = (ann.points ?? []).map((p) => p * scale);
+              return (
+                <KonvaLine
+                  key={ann.id}
+                  ref={(node) => registerShapeRef(ann.id, node)}
+                  points={pts}
+                  stroke={isSelected ? "#4f46e5" : (ann.color ?? DEFAULT_STROKE_COLOR)}
+                  strokeWidth={(ann.strokeWidth ?? DEFAULT_STROKE_WIDTH) * scale}
+                  lineCap="round"
+                  lineJoin="round"
+                  tension={0}
+                  opacity={ann.opacity ?? 1}
+                  listening={activeTool === "select"}
+                  onClick={() => onAnnotationSelect(ann.id)}
+                  hitStrokeWidth={12}
                 />
               );
             }
@@ -348,8 +485,6 @@ export default function AnnotatedPage({
                   {...sharedProps}
                   ref={(node) => registerShapeRef(ann.id, node)}
                   image={imgEl}
-                  // Preserve aspect ratio by default; Transformer lets the user
-                  // override this manually if they want to distort the image.
                   opacity={ann.opacity ?? 1}
                 />
               );
@@ -376,40 +511,42 @@ export default function AnnotatedPage({
       </Stage>
 
       {/* Layer 3: inline textarea for text editing */}
-      {editingAnnotation && editingAnnotation.type === "text" && (
-        <textarea
-          ref={textareaRef}
-          defaultValue={editingAnnotation.text ?? ""}
-          onBlur={(e) => finishEditing(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") finishEditing(editingAnnotation.text ?? "");
-            // Shift+Enter = newline; bare Enter = commit
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              finishEditing(e.currentTarget.value);
-            }
-          }}
-          style={{
-            position: "absolute",
-            top: editingAnnotation.y * scale,
-            left: editingAnnotation.x * scale,
-            width: editingAnnotation.width * scale,
-            minHeight: editingAnnotation.height * scale,
-            fontSize: (editingAnnotation.fontSize ?? DEFAULT_FONT_SIZE) * scale,
-            color: editingAnnotation.color ?? "#111827",
-            lineHeight: 1.4,
-            fontFamily: "sans-serif",
-            padding: "2px 4px",
-            border: "2px solid #4f46e5",
-            borderRadius: 2,
-            background: "rgba(255,255,255,0.95)",
-            resize: "none",
-            outline: "none",
-            zIndex: 10,
-            overflow: "hidden",
-          }}
-        />
-      )}
+      {editingAnnotation &&
+        (editingAnnotation.type === "text" ||
+          editingAnnotation.type === "text-replace") && (
+          <textarea
+            ref={textareaRef}
+            defaultValue={editingAnnotation.text ?? ""}
+            onBlur={(e) => finishEditing(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") finishEditing(editingAnnotation.text ?? "");
+              // Shift+Enter = newline; bare Enter = commit
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                finishEditing(e.currentTarget.value);
+              }
+            }}
+            style={{
+              position: "absolute",
+              top: editingAnnotation.y * scale,
+              left: editingAnnotation.x * scale,
+              width: editingAnnotation.width * scale,
+              minHeight: editingAnnotation.height * scale,
+              fontSize: (editingAnnotation.fontSize ?? DEFAULT_FONT_SIZE) * scale,
+              color: editingAnnotation.color ?? "#111827",
+              lineHeight: 1.4,
+              fontFamily: "sans-serif",
+              padding: "2px 4px",
+              border: "2px solid #4f46e5",
+              borderRadius: 2,
+              background: "rgba(255,255,255,0.97)",
+              resize: "none",
+              outline: "none",
+              zIndex: 20,
+              overflow: "hidden",
+            }}
+          />
+        )}
     </div>
   );
 }

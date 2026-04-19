@@ -115,7 +115,7 @@ export default function ThumbnailSidebar({
                 {displayIdx + 1}
               </span>
 
-              {/* Delete button — only visible on hover, disabled when only 1 page */}
+              {/* Delete button — fades in on group hover, hidden when only 1 page remains */}
               {pageOrder.length > 1 && (
                 <button
                   onClick={(e) => {
@@ -123,7 +123,7 @@ export default function ThumbnailSidebar({
                     onDelete(originalPage);
                   }}
                   title="Remove this page from the document"
-                  className="absolute right-1 top-1 hidden rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 group-hover:flex"
+                  className="absolute right-1 top-1 rounded p-0.5 text-gray-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
                 >
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

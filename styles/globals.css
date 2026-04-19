@@ -10,3 +10,25 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ── PDF.js text layer ─────────────────────────────────────────────────────── */
+/* Spans are rendered by pdfjs TextLayer into our container div.               */
+/* They are transparent by default — the PDF canvas shows the real text.       */
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0% 0%;
+  line-height: 1;
+  user-select: none;
+}
+
+/* In textedit mode the container gets the .interactive class; spans show      */
+/* a subtle highlight on hover so users know they can click them.              */
+.pdf-text-layer.interactive span:hover {
+  background: rgba(79, 70, 229, 0.12);
+  outline: 1px solid rgba(79, 70, 229, 0.25);
+  border-radius: 1px;
+  cursor: text;
+}

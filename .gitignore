@@ -19,6 +19,7 @@
 
 # production
 /build
+/.claude
 
 # misc
 .DS_Store
@@ -44,3 +45,7 @@ next-env.d.ts
 # uploaded files (local dev only — keep directory, ignore contents)
 /uploads/*
 !/uploads/.gitkeep
+
+# Apryse WebViewer static assets (~200 MB, copied from node_modules on install)
+# Re-generate with: npm run copy-webviewer-assets
+/public/webviewer

@@ -1,5 +1,5 @@
-import { Pool, PoolClient } from "pg";
-import { EditorState, Annotation } from "@/types";
+import type { Pool, PoolClient } from "pg";
+import type { EditorState, Annotation } from "@/types";
 
 // ---- Row mapper -----------------------------------------------------------
 
@@ -49,32 +49,18 @@ export async function getOrCreateEditorState(
   return toEditorState(rows[0]);
 }
 
-export async function saveAnnotations(
+export async function saveEditorState(
   db: Pool | PoolClient,
   documentId: string,
-  annotations: Annotation[]
-): Promise<EditorState | null> {
-  const { rows } = await db.query(
-    `UPDATE editor_states
-     SET annotations_json = $1
-     WHERE document_id = $2
-     RETURNING *`,
-    [JSON.stringify(annotations), documentId]
-  );
-  return rows.length ? toEditorState(rows[0]) : null;
-}
-
-export async function savePageOrder(
-  db: Pool | PoolClient,
-  documentId: string,
+  annotations: Annotation[],
   pageOrder: number[]
 ): Promise<EditorState | null> {
   const { rows } = await db.query(
     `UPDATE editor_states
-     SET page_order_json = $1
-     WHERE document_id = $2
+     SET annotations_json = $1, page_order_json = $2
+     WHERE document_id = $3
      RETURNING *`,
-    [JSON.stringify(pageOrder), documentId]
+    [JSON.stringify(annotations), JSON.stringify(pageOrder), documentId]
   );
   return rows.length ? toEditorState(rows[0]) : null;
 }

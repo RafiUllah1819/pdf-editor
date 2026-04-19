@@ -29,6 +29,7 @@
  */
 
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import type { PDFPage, PDFFont } from "pdf-lib";
 import type { Annotation } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -57,11 +58,7 @@ function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; mime: string } {
 // Per-type annotation writers
 // ---------------------------------------------------------------------------
 
-function applyHighlight(
-  page: import("pdf-lib").PDFPage,
-  ann: Annotation,
-  pageHeight: number
-) {
+function applyHighlight(page: PDFPage, ann: Annotation, pageHeight: number) {
   const { r, g, b } = hexToRgb(ann.color ?? "#FFFF00");
   page.drawRectangle({
     x: ann.x,
@@ -73,12 +70,7 @@ function applyHighlight(
   });
 }
 
-function applyText(
-  page: import("pdf-lib").PDFPage,
-  ann: Annotation,
-  pageHeight: number,
-  font: import("pdf-lib").PDFFont
-) {
+function applyText(page: PDFPage, ann: Annotation, pageHeight: number, font: PDFFont) {
   const fontSize = ann.fontSize ?? 14;
   const { r, g, b } = hexToRgb(ann.color ?? "#111827");
   const lines = (ann.text ?? "").split("\n");
@@ -98,12 +90,54 @@ function applyText(
   });
 }
 
-async function applyImage(
-  pdfDoc: PDFDocument,
-  page: import("pdf-lib").PDFPage,
-  ann: Annotation,
-  pageHeight: number
-) {
+function applyDraw(page: PDFPage, ann: Annotation, pageHeight: number) {
+  const points = ann.points ?? [];
+  if (points.length < 4) return;
+  const { r, g, b } = hexToRgb(ann.color ?? "#1a1a1a");
+  const strokeWidth = ann.strokeWidth ?? 2;
+  for (let i = 0; i < points.length - 2; i += 2) {
+    page.drawLine({
+      start: { x: points[i],     y: pageHeight - points[i + 1] },
+      end:   { x: points[i + 2], y: pageHeight - points[i + 3] },
+      color: rgb(r, g, b),
+      thickness: strokeWidth,
+      opacity: ann.opacity ?? 1,
+    });
+  }
+}
+
+function applyTextReplace(page: PDFPage, ann: Annotation, pageHeight: number, font: PDFFont) {
+  // Cover the original text with a white rectangle
+  page.drawRectangle({
+    x: ann.x,
+    y: pageHeight - ann.y - ann.height,
+    width: ann.width,
+    height: ann.height,
+    color: rgb(1, 1, 1),
+    opacity: 1,
+  });
+
+  // Draw the replacement text using the same layout as applyText
+  const fontSize = ann.fontSize ?? 14;
+  const { r, g, b } = hexToRgb(ann.color ?? "#111827");
+  const lines = (ann.text ?? "").split("\n");
+  const lineHeight = fontSize * 1.4;
+
+  lines.forEach((line, i) => {
+    if (!line) return;
+    page.drawText(line, {
+      x: ann.x,
+      y: pageHeight - ann.y - fontSize - i * lineHeight,
+      size: fontSize,
+      font,
+      color: rgb(r, g, b),
+      opacity: ann.opacity ?? 1,
+      maxWidth: ann.width,
+    });
+  });
+}
+
+async function applyImage(pdfDoc: PDFDocument, page: PDFPage, ann: Annotation, pageHeight: number) {
   if (!ann.src) return;
   const { bytes, mime } = dataUrlToBytes(ann.src);
 
@@ -178,6 +212,12 @@ export async function exportPdf(
         break;
       case "image":
         await applyImage(outputPdf, page, ann, pageHeight);
+        break;
+      case "draw":
+        applyDraw(page, ann, pageHeight);
+        break;
+      case "text-replace":
+        applyTextReplace(page, ann, pageHeight, font);
         break;
       // rect / arrow: not yet implemented — skip gracefully
     }

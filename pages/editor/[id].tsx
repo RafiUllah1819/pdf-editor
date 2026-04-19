@@ -4,10 +4,10 @@ import { getDb } from "@/lib/db";
 import { getDocumentById } from "@/server/documents";
 import { getOrCreateEditorState } from "@/server/editorStates";
 import { getStorage } from "@/lib/storage";
+import { getSession } from "@/lib/session";
+import type { SessionUser } from "@/lib/session";
 import type { Annotation, Document } from "@/types";
 
-// EditorShell (and everything it imports) must be browser-only — pdfjs-dist
-// requires a window context and must not be bundled for the server.
 const EditorShell = dynamic(() => import("@/components/editor/EditorShell"), {
   ssr: false,
   loading: () => (
@@ -26,6 +26,7 @@ type Props = {
   fileUrl: string;
   initialAnnotations: Annotation[];
   initialPageOrder: number[];
+  user: SessionUser;
 };
 
 export default function EditorPage({ document, fileUrl, initialAnnotations, initialPageOrder }: Props) {
@@ -40,25 +41,34 @@ export default function EditorPage({ document, fileUrl, initialAnnotations, init
 }
 
 // ---------------------------------------------------------------------------
-// Server-side data fetching
+// Server-side data fetching + auth + ownership check
 // ---------------------------------------------------------------------------
 
-export const getServerSideProps: GetServerSideProps<Props> = async ({ params }) => {
+export const getServerSideProps: GetServerSideProps<Props> = async ({ req, res, params }) => {
+  const session = await getSession(req, res);
+
+  if (!session.user) {
+    return { redirect: { destination: "/login", permanent: false } };
+  }
+
   const id = params?.id;
   if (typeof id !== "string") return { notFound: true };
 
   try {
-    const document = await getDocumentById(getDb(), id);
+    // getDocumentById scopes the query to session.user.id — returns null for wrong owner
+    const document = await getDocumentById(getDb(), id, session.user.id);
     if (!document) return { notFound: true };
 
-    const fileUrl = getStorage().getServeUrl(document.filePath);
+    const fileUrl = await getStorage().getDownloadUrl(document.filePath);
     const editorState = await getOrCreateEditorState(getDb(), document.id);
+
     return {
       props: {
         document,
         fileUrl,
         initialAnnotations: editorState.annotations,
-        initialPageOrder: editorState.pageOrder,
+        initialPageOrder:   editorState.pageOrder,
+        user:               session.user,
       },
     };
   } catch {
