@@ -2,16 +2,20 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getDb } from "@/lib/db";
 import { getDocumentById } from "@/server/documents";
 import { getOrCreateEditorState, saveEditorState } from "@/server/editorStates";
-import { getSessionUser } from "@/lib/session";
 import type { Annotation, EditorState } from "@/types";
+
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "1mb",
+    },
+  },
+};
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<EditorState | { error: string }>
 ) {
-  const user = await getSessionUser(req, res);
-  if (!user) return res.status(401).json({ error: "Not authenticated" });
-
   const documentId = req.query.documentId;
   if (typeof documentId !== "string") {
     return res.status(400).json({ error: "Invalid documentId" });
@@ -19,8 +23,7 @@ export default async function handler(
 
   const db = getDb();
 
-  // Verify the document exists and belongs to the requesting user
-  const document = await getDocumentById(db, documentId, user.id);
+  const document = await getDocumentById(db, documentId);
   if (!document) return res.status(404).json({ error: "Document not found" });
 
   if (req.method === "GET") {

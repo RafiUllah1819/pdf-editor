@@ -6,7 +6,6 @@ import { getDb, withTransaction } from "@/lib/db";
 import { createDocument } from "@/server/documents";
 import { createVersion } from "@/server/documentVersions";
 import { generateId, stripPdfExtension } from "@/lib/utils";
-import { getSessionUser } from "@/lib/session";
 import type { Document } from "@/types";
 
 export const config = {
@@ -22,9 +21,6 @@ export default async function handler(
 ) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const user = await getSessionUser(req, res);
-  if (!user) return res.status(401).json({ error: "Not authenticated" });
-
   let tempPath: string | null = null;
 
   try {
@@ -37,7 +33,7 @@ export default async function handler(
 
     const document = await withTransaction(async (client) => {
       const doc = await createDocument(client, {
-        userId:       user.id,
+        userId:       null,
         title:        stripPdfExtension(upload.originalName),
         originalName: upload.originalName,
         filePath:     key,

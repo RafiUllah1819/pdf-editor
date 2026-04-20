@@ -20,6 +20,10 @@ export type SessionData = {
 
 // SESSION_SECRET must be at least 32 characters.
 // Generate one with:  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET environment variable must be set in production");
+}
+
 const sessionOptions = {
   password: process.env.SESSION_SECRET ?? "dev-secret-change-this-in-production!!",
   cookieName: "pdf-editor-session",

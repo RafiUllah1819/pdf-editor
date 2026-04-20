@@ -4,8 +4,6 @@ import { useRouter } from "next/router";
 import { useRef, useState } from "react";
 import { getDb } from "@/lib/db";
 import { getAllDocuments } from "@/server/documents";
-import { getSession } from "@/lib/session";
-import type { SessionUser } from "@/lib/session";
 import { formatDate, formatBytes } from "@/lib/utils";
 import { AlertBanner, EmptyState, Spinner } from "@/components/ui";
 import type { Document } from "@/types";
@@ -16,11 +14,10 @@ import type { Document } from "@/types";
 
 type Props = {
   documents: Document[];
-  user: SessionUser;
   dbError?: string;
 };
 
-export default function DashboardPage({ documents, user, dbError }: Props) {
+export default function DashboardPage({ documents, dbError }: Props) {
   const router = useRouter();
 
   return (
@@ -235,21 +232,12 @@ function DocumentCard({ doc }: { doc: Document }) {
         {formatBytes(doc.fileSize)} · {formatDate(doc.updatedAt)}
       </p>
 
-      <div className="mt-4 flex gap-2">
-        {/* Primary: SDK editor — true text editing + versioned save */}
+      <div className="mt-4">
         <Link
           href={`/editor-sdk/${doc.id}`}
-          className="flex-1 rounded-lg bg-indigo-600 py-1.5 text-center text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
+          className="block w-full rounded-lg bg-indigo-600 py-1.5 text-center text-xs font-semibold text-white hover:bg-indigo-700 transition-colors"
         >
           Edit PDF
-        </Link>
-        {/* Secondary: annotation-only editor — highlights, text boxes, drawing */}
-        <Link
-          href={`/editor/${doc.id}`}
-          title="Annotate — add highlights, text boxes, and drawings"
-          className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-colors"
-        >
-          Annotate
         </Link>
       </div>
     </div>
@@ -260,18 +248,12 @@ function DocumentCard({ doc }: { doc: Document }) {
 // Server-side data fetching + auth guard
 // ---------------------------------------------------------------------------
 
-export const getServerSideProps: GetServerSideProps<Props> = async ({ req, res }) => {
-  const session = await getSession(req, res);
-
-  if (!session.user) {
-    return { redirect: { destination: "/login", permanent: false } };
-  }
-
+export const getServerSideProps: GetServerSideProps<Props> = async () => {
   try {
-    const documents = await getAllDocuments(getDb(), session.user.id);
-    return { props: { documents, user: session.user } };
+    const documents = await getAllDocuments(getDb());
+    return { props: { documents } };
   } catch (err) {
     const dbError = err instanceof Error ? err.message : "Could not connect to database";
-    return { props: { documents: [], user: session.user, dbError } };
+    return { props: { documents: [], dbError } };
   }
 };

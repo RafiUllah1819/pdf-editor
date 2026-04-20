@@ -3,7 +3,6 @@ import { getDb, withTransaction } from "@/lib/db";
 import { getDocumentById } from "@/server/documents";
 import { createVersion } from "@/server/documentVersions";
 import { getStorage } from "@/lib/storage";
-import { getSessionUser } from "@/lib/session";
 import { generateId } from "@/lib/utils";
 
 type SuccessResponse = { ok: true; versionNum: number; filePath: string };
@@ -11,9 +10,9 @@ type ErrorResponse = { error: string };
 
 export const config = {
   api: {
-    bodyParser: {
-      sizeLimit: "50mb",
-    },
+    // Raw binary upload — body parser must be disabled so the request stream
+    // remains readable via `for await (const chunk of req)`.
+    bodyParser: false,
   },
 };
 
@@ -25,16 +24,13 @@ export default async function handler(
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const user = await getSessionUser(req, res);
-  if (!user) return res.status(401).json({ error: "Not authenticated" });
-
   const { documentId } = req.query;
   if (typeof documentId !== "string") {
     return res.status(400).json({ error: "Invalid document ID" });
   }
 
   try {
-    const document = await getDocumentById(getDb(), documentId, user.id);
+    const document = await getDocumentById(getDb(), documentId);
     if (!document) return res.status(404).json({ error: "Document not found" });
 
     // Read raw PDF bytes from request body
@@ -57,9 +53,9 @@ export default async function handler(
       const { rows } = await client.query(
         `UPDATE documents
          SET latest_version_num = latest_version_num + 1
-         WHERE id = $1 AND user_id = $2
+         WHERE id = $1
          RETURNING latest_version_num`,
-        [documentId, user.id]
+        [documentId]
       );
 
       if (!rows.length) throw new Error("Document not found");

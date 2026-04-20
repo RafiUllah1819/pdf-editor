@@ -37,11 +37,13 @@ export default function ViewerToolbar({
         </IconButton>
 
         <div className="flex items-center gap-1.5 px-1 text-xs">
+          <span className="text-gray-400 select-none">Page</span>
           <input
             type="number"
             min={1}
             max={totalPages}
             value={currentPage}
+            aria-label="Current page"
             onChange={(e) => {
               const v = parseInt(e.target.value, 10);
               if (!isNaN(v)) onPageChange(v);

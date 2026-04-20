@@ -6,8 +6,8 @@ import { getLatestVersion } from "@/server/documentVersions";
 import { getStorage } from "@/lib/storage";
 import type { Document } from "@/types";
 
-const CommercialPdfEditor = dynamic(
-  () => import("@/components/pdf/CommercialPdfEditor"),
+const FillSignEditor = dynamic(
+  () => import("@/components/pdf/FillSignEditor"),
   {
     ssr: false,
     loading: () => (
@@ -18,31 +18,22 @@ const CommercialPdfEditor = dynamic(
   }
 );
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
-
 type Props = {
   document: Document;
   fileUrl: string;
 };
 
-export default function SdkEditorPage({ document, fileUrl }: Props) {
+export default function FillSignPage({ document, fileUrl }: Props) {
   return (
     <div className="h-screen flex flex-col">
-      <CommercialPdfEditor
+      <FillSignEditor
         documentId={document.id}
         pdfUrl={fileUrl}
         title={document.title}
-        versionNum={document.latestVersionNum}
       />
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Server-side: auth + ownership + file URL
-// ---------------------------------------------------------------------------
 
 export const getServerSideProps: GetServerSideProps<Props> = async ({ params }) => {
   const id = params?.id;
@@ -58,15 +49,10 @@ export const getServerSideProps: GetServerSideProps<Props> = async ({ params }) 
     const latestVersion = await getLatestVersion(db, id);
     if (latestVersion) storageKey = latestVersion.filePath;
   } catch {
-    // versions table missing or unavailable — original file is fine
+    // versions table missing — use original file
   }
 
   const fileUrl = await getStorage().getDownloadUrl(storageKey);
 
-  return {
-    props: {
-      document,
-      fileUrl,
-    },
-  };
+  return { props: { document, fileUrl } };
 };

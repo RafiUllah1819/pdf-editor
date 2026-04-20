@@ -35,44 +35,33 @@ export async function createVersion(
   return toVersion(rows[0]);
 }
 
-/**
- * Returns the version record for a document's latest version.
- * Scoped to userId to prevent cross-user access.
- */
+/** Returns the version record for a document's latest version. */
 export async function getLatestVersion(
   db: Pool | PoolClient,
-  documentId: string,
-  userId: string
+  documentId: string
 ): Promise<DocumentVersion | null> {
   const { rows } = await db.query(
     `SELECT v.*
      FROM   document_versions v
      JOIN   documents d ON d.id = v.document_id
      WHERE  v.document_id = $1
-       AND  d.user_id = $2
        AND  v.version_num = d.latest_version_num`,
-    [documentId, userId]
+    [documentId]
   );
   return rows.length ? toVersion(rows[0]) : null;
 }
 
-/**
- * Returns all versions for a document, oldest first.
- * Scoped to userId to prevent cross-user access.
- */
+/** Returns all versions for a document, oldest first. */
 export async function listVersions(
   db: Pool | PoolClient,
-  documentId: string,
-  userId: string
+  documentId: string
 ): Promise<DocumentVersion[]> {
   const { rows } = await db.query(
     `SELECT v.*
      FROM   document_versions v
-     JOIN   documents d ON d.id = v.document_id
      WHERE  v.document_id = $1
-       AND  d.user_id = $2
      ORDER  BY v.version_num ASC`,
-    [documentId, userId]
+    [documentId]
   );
   return rows.map(toVersion);
 }

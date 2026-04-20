@@ -3,7 +3,6 @@ import { getDb } from "@/lib/db";
 import { getDocumentById } from "@/server/documents";
 import { getEditorState } from "@/server/editorStates";
 import { getStorage } from "@/lib/storage";
-import { getSessionUser } from "@/lib/session";
 import { exportPdf } from "@/lib/exportPdf";
 
 export default async function handler(
@@ -12,9 +11,6 @@ export default async function handler(
 ) {
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const user = await getSessionUser(req, res);
-  if (!user) return res.status(401).json({ error: "Not authenticated" });
-
   const { documentId } = req.query;
   if (typeof documentId !== "string") {
     return res.status(400).json({ error: "Invalid documentId" });
@@ -22,8 +18,7 @@ export default async function handler(
 
   const db = getDb();
 
-  // getDocumentById enforces ownership — returns null if wrong user
-  const document = await getDocumentById(db, documentId, user.id);
+  const document = await getDocumentById(db, documentId);
   if (!document) return res.status(404).json({ error: "Document not found" });
 
   const editorState = await getEditorState(db, documentId).catch(() => null);

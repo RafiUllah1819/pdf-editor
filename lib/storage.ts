@@ -92,15 +92,21 @@ class LocalStorageProvider implements StorageProvider {
  * Before switching to "s3", install the required packages:
  *   npm install @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
  */
+let _storageInstance: StorageProvider | null = null;
+
 export function getStorage(): StorageProvider {
+  if (_storageInstance) return _storageInstance;
+
   const provider = process.env.STORAGE_PROVIDER ?? "local";
 
   if (provider === "s3") {
     // Lazy require — only evaluated when STORAGE_PROVIDER=s3
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createS3Provider } = require("./storage-s3") as typeof import("./storage-s3");
-    return createS3Provider();
+    _storageInstance = createS3Provider();
+  } else {
+    _storageInstance = new LocalStorageProvider();
   }
 
-  return new LocalStorageProvider();
+  return _storageInstance;
 }
