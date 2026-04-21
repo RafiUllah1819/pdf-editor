@@ -201,19 +201,38 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
   useEffect(() => {
     let cancelled = false;
     async function render() {
-      const page = await pdfDoc.getPage(pageNum);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const page = await pdfDoc.getPage(pageNum) as any;
       const vp = page.getViewport({ scale: SCALE });
       const tc = await page.getTextContent();
+
       if (cancelled) return;
       setViewport(vp);
-      setItems(tc.items as RawItem[]);
       setSize({ w: Math.floor(vp.width), h: Math.floor(vp.height) });
+
       if (canvasRef.current) {
         canvasRef.current.width = vp.width;
         canvasRef.current.height = vp.height;
         const ctx = canvasRef.current.getContext("2d")!;
+        // Render first — this loads fonts into page.commonObjs
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
       }
+
+      // After render, resolve internal font refs (e.g. "g_d0_f1") to real names
+      // (e.g. "Arial-BoldMT") via page.commonObjs which is populated after render.
+      const rawItems = tc.items as RawItem[];
+      const resolved = rawItems.map((item) => {
+        try {
+          const fontObj = page.commonObjs.get(item.fontName);
+          const realName: string = fontObj?.name || fontObj?.loadedName || item.fontName;
+          return { ...item, fontName: realName };
+        } catch {
+          return item;
+        }
+      });
+
+      if (cancelled) return;
+      setItems(resolved);
     }
     render().catch(console.error);
     return () => { cancelled = true; };
