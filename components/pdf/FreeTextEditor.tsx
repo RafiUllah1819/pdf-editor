@@ -55,6 +55,8 @@ function hitTest(cx: number, cy: number, items: RawItem[], vp: any): RawItem | n
 const FONT_SCALE = 0.88;
 // Vertical offset to align overlay with the rendered PDF text baseline
 const OVERLAY_MARGIN_TOP = 6;
+// Font size reduction applied when drawing text into the exported PDF (in points)
+const PDF_FONT_REDUCE = 1.5;
 
 // ── Auto-growing input ────────────────────────────────────────────────────────
 
@@ -332,7 +334,7 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
       page.drawText(edit.text, {
         x: edit.px,
         y: edit.py - edit.fontSize * 0.05,
-        size: edit.fontSize,
+        size: edit.fontSize - PDF_FONT_REDUCE,
         font,
         color: rgb(0, 0, 0),
       });
