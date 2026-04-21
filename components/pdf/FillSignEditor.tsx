@@ -45,8 +45,8 @@ export default function FillSignEditor({ documentId, pdfUrl, title }: Props) {
       instanceRef.current = instance;
       const { UI } = instance;
 
-      // Enable Fill & Sign feature
-      UI.enableFeatures([UI.Feature.FilledSign]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      UI.enableFeatures([(UI.Feature as any).FilledSign]);
       UI.setToolbarGroup("toolbarGroup-FillAndSign");
 
       instance.Core.documentViewer.addEventListener("documentLoaded", () => {
