@@ -52,7 +52,7 @@ function hitTest(cx: number, cy: number, items: RawItem[], vp: any): RawItem | n
 
 // CSS font-size correction: PDF glyph heights don't map 1-to-1 with CSS font-size
 // because CSS includes descender space. 0.88 gives the closest visual match.
-const FONT_SCALE = 0.88;
+const FONT_SCALE = 0.905;
 // Vertical offset to align overlay with the rendered PDF text baseline
 const OVERLAY_MARGIN_TOP = 6;
 // Font size reduction applied when drawing text into the exported PDF (in points)
