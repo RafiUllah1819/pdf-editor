@@ -18,8 +18,15 @@ type Edit = {
   sx: number; sy: number; sw: number; sh: number;
   // PDF position (pt) — for pdf-lib export
   px: number; py: number; pw: number; ph: number;
-  fontSize: number; // PDF points
-  fontName: string; // raw PDF font name e.g. "ABCDEF+Arial-BoldMT"
+  fontSize: number;     // PDF points
+  fontName: string;     // resolved actual font name e.g. "Arial-BoldMT"
+  fontFamily: string;   // CSS font-family
+  fontWeight: string;   // "bold" | "normal"
+  fontStyle: string;    // "italic" | "normal"
+  color: string;        // CSS color e.g. "rgb(30,30,30)"
+  pdfColor: [number, number, number]; // r,g,b 0–1 for pdf-lib
+  bgColor: [number, number, number];  // background behind text for cover rect
+  fontData?: Uint8Array; // raw embedded font bytes if extractable from PDF
   originalText: string;
   text: string;
 };
@@ -31,7 +38,6 @@ const HIT_PAD = 6;
 
 // ── Font detection ────────────────────────────────────────────────────────────
 
-// PDF font names look like "ABCDEF+TimesNewRoman-BoldItalic" or "Helvetica"
 function normFont(name: string) {
   return name.replace(/^[A-Z]{6}\+/, "").toLowerCase();
 }
@@ -41,25 +47,21 @@ function isItalic(name: string)  { const n = normFont(name); return n.includes("
 function isSerif(name: string)   { const n = normFont(name); return n.includes("times") || n.includes("georgia") || n.includes("palatino") || n.includes("garamond") || n.includes("serif"); }
 function isMono(name: string)    { const n = normFont(name); return n.includes("courier") || n.includes("mono") || n.includes("consol") || n.includes("code"); }
 
-/** CSS font-family string derived from the PDF font name */
 export function cssFontFamily(fontName: string): string {
   if (isMono(fontName))  return "Courier New, Courier, monospace";
   if (isSerif(fontName)) return "Times New Roman, Times, serif";
   return "Arial, Helvetica, sans-serif";
 }
 
-/** CSS font-weight */
 export function cssFontWeight(fontName: string): string {
   return isBold(fontName) ? "bold" : "normal";
 }
 
-/** CSS font-style */
 export function cssFontStyle(fontName: string): string {
   return isItalic(fontName) ? "italic" : "normal";
 }
 
-/** Closest pdf-lib StandardFont for this PDF font */
-async function pdfLibFont(fontName: string, doc: { embedFont: (f: string) => Promise<unknown> }) {
+async function pdfLibStandardFont(fontName: string, doc: { embedFont: (f: string) => Promise<unknown> }) {
   const { StandardFonts } = await import("pdf-lib");
   const bold   = isBold(fontName);
   const italic = isItalic(fontName);
@@ -88,7 +90,6 @@ function hitTest(cx: number, cy: number, items: RawItem[], vp: any): RawItem | n
     if (!item.str.trim()) continue;
     const [sx, sy] = vp.convertToViewportPoint(item.transform[4], item.transform[5]);
     const fs = Math.abs(item.transform[3]) * SCALE;
-    // item.width is already in PDF points — multiply by SCALE for screen pixels
     const sw = item.width * SCALE;
     if (
       cx >= sx - HIT_PAD && cx <= sx + sw + HIT_PAD &&
@@ -98,12 +99,7 @@ function hitTest(cx: number, cy: number, items: RawItem[], vp: any): RawItem | n
   return null;
 }
 
-// CSS font-size correction: PDF glyph heights don't map 1-to-1 with CSS font-size
-// because CSS includes descender space. 0.88 gives the closest visual match.
 const FONT_SCALE = 0.905;
-// Vertical offset to align overlay with the rendered PDF text baseline
-const OVERLAY_MARGIN_TOP = 6;
-// Font size reduction applied when drawing text into the exported PDF (in points)
 const PDF_FONT_REDUCE = 1.5;
 
 // ── Auto-growing input ────────────────────────────────────────────────────────
@@ -121,7 +117,6 @@ function AutoInput({
   const measureRef = useRef<HTMLSpanElement>(null);
   const cssFontSize = edit.fontSize * SCALE * FONT_SCALE;
 
-  // Sync input width to measured text width
   const syncWidth = useCallback(() => {
     if (inputRef.current && measureRef.current) {
       const measured = measureRef.current.offsetWidth;
@@ -133,16 +128,13 @@ function AutoInput({
 
   return (
     <div style={{ position: "relative", display: "inline-block", minWidth: edit.sw }}>
-      {/* Hidden span used to measure text width */}
       <span
         ref={measureRef}
         aria-hidden
         style={{
           position: "absolute", visibility: "hidden", whiteSpace: "nowrap",
-          fontSize: cssFontSize,
-          fontFamily: cssFontFamily(edit.fontName),
-          fontWeight: cssFontWeight(edit.fontName),
-          fontStyle: cssFontStyle(edit.fontName),
+          fontSize: cssFontSize, fontFamily: edit.fontFamily,
+          fontWeight: edit.fontWeight, fontStyle: edit.fontStyle,
           pointerEvents: "none",
         }}
       >
@@ -156,14 +148,14 @@ function AutoInput({
         onBlur={onBlur}
         onKeyDown={e => { if (e.key === "Escape" || e.key === "Enter") onBlur(); }}
         style={{
-          height: cssFontSize * 1.32,
-          marginTop: OVERLAY_MARGIN_TOP,
+          height: edit.sh,
           minWidth: edit.sw,
           padding: "0 2px",
           fontSize: cssFontSize,
-          fontFamily: cssFontFamily(edit.fontName),
-          fontWeight: cssFontWeight(edit.fontName),
-          fontStyle: cssFontStyle(edit.fontName),
+          fontFamily: edit.fontFamily,
+          fontWeight: edit.fontWeight,
+          fontStyle: edit.fontStyle,
+          color: edit.color,
           background: "white",
           border: "2px solid #6366f1",
           outline: "none",
@@ -179,24 +171,38 @@ function AutoInput({
 
 // ── Per-page component ────────────────────────────────────────────────────────
 
+type ClickedText = {
+  item: RawItem;
+  fontName: string;
+  fontFamily: string;
+  fontWeight: string;
+  fontStyle: string;
+  color: string;
+  pdfColor: [number, number, number];
+  bgColor: [number, number, number];
+  fontData?: Uint8Array;
+  sx: number; sy: number; sw: number; sh: number;
+};
+
 type PageProps = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pdfDoc: any;
   pageNum: number;
   edits: Edit[];
   activeId: string | null;
-  onPageClick: (e: React.MouseEvent<HTMLDivElement>, pageNum: number, vp: unknown, items: RawItem[]) => void;
+  onTextClick: (pageNum: number, clicked: ClickedText) => void;
   onTextChange: (id: string, text: string) => void;
   onBlur: () => void;
   onFocus: (id: string) => void;
 };
 
-function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, onBlur, onFocus }: PageProps) {
+function PdfPage({ pdfDoc, pageNum, edits, activeId, onTextClick, onTextChange, onBlur, onFocus }: PageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [viewport, setViewport] = useState<any>(null);
   const [items, setItems] = useState<RawItem[]>([]);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [fontDataMap, setFontDataMap] = useState<Map<string, Uint8Array>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -214,29 +220,84 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
         canvasRef.current.width = vp.width;
         canvasRef.current.height = vp.height;
         const ctx = canvasRef.current.getContext("2d")!;
-        // Render first — this loads fonts into page.commonObjs
         await page.render({ canvasContext: ctx, viewport: vp }).promise;
       }
 
-      // After render, resolve internal font refs (e.g. "g_d0_f1") to real names
-      // (e.g. "Arial-BoldMT") via page.commonObjs which is populated after render.
+      // Resolve internal font refs to real names; also try to extract binary data
       const rawItems = tc.items as RawItem[];
+      const newFontDataMap = new Map<string, Uint8Array>();
       const resolved = rawItems.map((item) => {
         try {
-          const fontObj = page.commonObjs.get(item.fontName);
-          const realName: string = fontObj?.name || fontObj?.loadedName || item.fontName;
-          return { ...item, fontName: realName };
-        } catch {
-          return item;
-        }
+          const obj = page.commonObjs.get(item.fontName);
+          if (obj) {
+            const realName: string = obj.name || obj.loadedName || item.fontName;
+            // Attempt to extract raw font bytes (TrueType/OpenType)
+            if (!newFontDataMap.has(realName)) {
+              const data = obj.data as Uint8Array | undefined;
+              if (data instanceof Uint8Array && data.length > 0) {
+                newFontDataMap.set(realName, data);
+              }
+            }
+            return { ...item, fontName: realName };
+          }
+        } catch { /* fall through */ }
+        return item;
       });
 
       if (cancelled) return;
       setItems(resolved);
+      setFontDataMap(newFontDataMap);
     }
     render().catch(console.error);
     return () => { cancelled = true; };
   }, [pdfDoc, pageNum]);
+
+  // Sample a 2×2 area from the canvas and return averaged RGB
+  const sampleColor = useCallback((cx: number, cy: number): { css: string; pdf: [number, number, number] } => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { css: "rgb(0,0,0)", pdf: [0, 0, 0] };
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return { css: "rgb(0,0,0)", pdf: [0, 0, 0] };
+    const x = Math.max(0, Math.min(Math.floor(cx), canvas.width  - 2));
+    const y = Math.max(0, Math.min(Math.floor(cy), canvas.height - 2));
+    const d = ctx.getImageData(x, y, 2, 2).data;
+    const r = Math.round((d[0] + d[4] + d[8]  + d[12]) / 4);
+    const g = Math.round((d[1] + d[5] + d[9]  + d[13]) / 4);
+    const b = Math.round((d[2] + d[6] + d[10] + d[14]) / 4);
+    return { css: `rgb(${r},${g},${b})`, pdf: [r / 255, g / 255, b / 255] };
+  }, []);
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!viewport) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const item = hitTest(cx, cy, items, viewport);
+    if (!item?.str.trim()) return;
+
+    const [sx, sy] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+    const fontSize  = Math.abs(item.transform[3]);
+    const sh        = item.height * SCALE;
+    const syTop     = sy - sh * 0.85;
+    const sw        = item.width * SCALE;
+
+    // Sample text color at the center of the glyph
+    const { css: color, pdf: pdfColor } = sampleColor(sx + sw * 0.3, sy - sh * 0.4);
+    // Sample background color above the text line where no glyphs render
+    const { pdf: bgColor } = sampleColor(sx + sw * 0.5, Math.max(0, syTop - 4));
+
+    const fontData = fontDataMap.get(item.fontName);
+
+    onTextClick(pageNum, {
+      item,
+      fontName:   item.fontName,
+      fontFamily: cssFontFamily(item.fontName),
+      fontWeight: cssFontWeight(item.fontName),
+      fontStyle:  cssFontStyle(item.fontName),
+      color, pdfColor, bgColor, fontData,
+      sx, sy: syTop, sw, sh,
+    });
+  }, [viewport, items, pageNum, onTextClick, sampleColor, fontDataMap]);
 
   const pageEdits = edits.filter(e => e.pageNum === pageNum);
 
@@ -247,11 +308,10 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
-      {/* Invisible click layer */}
       {viewport && (
         <div
           className="absolute inset-0 cursor-text"
-          onClick={(e) => onPageClick(e, pageNum, viewport, items)}
+          onClick={handleClick}
         />
       )}
 
@@ -262,20 +322,18 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
           style={{ position: "absolute", left: edit.sx, top: edit.sy, width: Math.max(edit.sw, 60), height: edit.sh, zIndex: 10 }}
         >
           {activeId === edit.id ? (
-            // Active: auto-growing input covers original text
             <AutoInput edit={edit} onTextChange={onTextChange} onBlur={onBlur} />
           ) : edit.text !== edit.originalText ? (
-            // Changed: white box with new text covers the original PDF text
             <div
               onClick={e => { e.stopPropagation(); onFocus(edit.id); }}
               style={{
-                height: edit.fontSize * SCALE * FONT_SCALE * 1.32,
-                marginTop: OVERLAY_MARGIN_TOP,
+                height: edit.sh,
                 minWidth: edit.sw,
                 fontSize: edit.fontSize * SCALE * FONT_SCALE,
-                fontFamily: cssFontFamily(edit.fontName),
-                fontWeight: cssFontWeight(edit.fontName),
-                fontStyle: cssFontStyle(edit.fontName),
+                fontFamily: edit.fontFamily,
+                fontWeight: edit.fontWeight,
+                fontStyle: edit.fontStyle,
+                color: edit.color,
                 background: "white",
                 border: "1px solid #a5b4fc",
                 cursor: "text",
@@ -289,7 +347,6 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
               {edit.text}
             </div>
           ) : (
-            // Unchanged: transparent click target — PDF text shows through
             <div
               onClick={e => { e.stopPropagation(); onFocus(edit.id); }}
               style={{ width: "100%", height: "100%", background: "transparent", cursor: "text" }}
@@ -337,41 +394,21 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
 
   // ── Click handler ─────────────────────────────────────────────────────────
 
-  const handlePageClick = useCallback((
-    e: React.MouseEvent<HTMLDivElement>,
-    pageNum: number,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    viewport: any,
-    items: RawItem[],
-  ) => {
-    setActiveId(null);
-    const rect = e.currentTarget.getBoundingClientRect();
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const item = hitTest(cx, cy, items, viewport);
-    if (!item?.str.trim()) return;
-
-    const [sx, sy] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+  const handleTextClick = useCallback((pageNum: number, clicked: ClickedText) => {
+    const { item, fontName, fontFamily, fontWeight, fontStyle, color, pdfColor, bgColor, fontData, sx, sy, sw, sh } = clicked;
     const fontSize = Math.abs(item.transform[3]);
-    const screenFs = fontSize * SCALE;
-    // item.width is in PDF points; screen width = item.width * SCALE
-    const sw = item.width * SCALE;
-
     const id = uid();
     const edit: Edit = {
       id, pageNum,
-      sx, sy: sy - screenFs, sw, sh: screenFs * 1.3,
+      sx, sy, sw, sh,
       px: item.transform[4], py: item.transform[5],
-      pw: item.width,
-      ph: fontSize * 1.2,
-      fontSize,
-      fontName: item.fontName ?? "",
+      pw: item.width, ph: item.height,
+      fontSize, fontName, fontFamily, fontWeight, fontStyle,
+      color, pdfColor, bgColor, fontData,
       originalText: item.str,
       text: item.str,
     };
-
     setEdits(prev => {
-      // Remove any existing edit for the same text position
       const filtered = prev.filter(ed => !(ed.pageNum === pageNum && Math.abs(ed.px - edit.px) < 1 && Math.abs(ed.py - edit.py) < 1));
       return [...filtered, edit];
     });
@@ -389,38 +426,54 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
     const src = pdfBytesRef.current!;
     const doc = await PDFDocument.load(src);
 
-    // Cache embedded fonts by font-key to avoid re-embedding the same font
+    // Font cache: try embedded binary first, fall back to standard font
     const fontCache = new Map<string, Awaited<ReturnType<typeof doc.embedFont>>>();
-    const getFont = async (fontName: string) => {
-      const key = normFont(fontName) + (isBold(fontName) ? "-b" : "") + (isItalic(fontName) ? "-i" : "") + (isMono(fontName) ? "-m" : "") + (isSerif(fontName) ? "-s" : "");
-      if (!fontCache.has(key)) fontCache.set(key, await pdfLibFont(fontName, doc) as Awaited<ReturnType<typeof doc.embedFont>>);
-      return fontCache.get(key)!;
+    const getFont = async (edit: Edit) => {
+      const cacheKey = edit.fontName + (edit.fontData ? "-embedded" : "-std");
+      if (fontCache.has(cacheKey)) return fontCache.get(cacheKey)!;
+
+      // Attempt to embed the actual font binary extracted from PDF.js
+      if (edit.fontData && edit.fontData.length > 0) {
+        try {
+          const font = await doc.embedFont(edit.fontData) as Awaited<ReturnType<typeof doc.embedFont>>;
+          fontCache.set(cacheKey, font);
+          return font;
+        } catch {
+          // Font binary not compatible (Type1, CIDFont, etc.) — fall through to standard
+        }
+      }
+
+      // Fall back to closest pdf-lib standard font
+      const font = await pdfLibStandardFont(edit.fontName, doc) as Awaited<ReturnType<typeof doc.embedFont>>;
+      fontCache.set(cacheKey, font);
+      return font;
     };
 
     const changed = edits.filter(e => e.text !== e.originalText);
     for (const edit of changed) {
       const page = doc.getPages()[edit.pageNum - 1];
-      const font = await getFont(edit.fontName);
+      const font = await getFont(edit);
       const drawSize = edit.fontSize - PDF_FONT_REDUCE;
       const textW = Math.max(edit.pw, font.widthOfTextAtSize(edit.text, drawSize) + 4);
 
-      // Cover original text with white box
+      // Cover original text with a rectangle matching the page background
+      const [bgR, bgG, bgB] = edit.bgColor;
       page.drawRectangle({
-        x: edit.px - 1,
+        x: edit.px - 2,
         y: edit.py - edit.fontSize * 0.25,
-        width: textW + 4,
-        height: edit.fontSize * 1.3,
-        color: rgb(1, 1, 1),
+        width: textW + 6,
+        height: edit.fontSize * 1.35,
+        color: rgb(bgR, bgG, bgB),
         borderWidth: 0,
       });
 
-      // Draw new text with matched font
+      // Draw replacement text at exact original position
       page.drawText(edit.text, {
         x: edit.px,
         y: edit.py - edit.fontSize * 0.05,
         size: drawSize,
         font,
-        color: rgb(0, 0, 0),
+        color: rgb(...edit.pdfColor),
       });
     }
 
@@ -530,7 +583,7 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
             pageNum={pageNum}
             edits={edits}
             activeId={activeId}
-            onPageClick={handlePageClick}
+            onTextClick={handleTextClick}
             onTextChange={handleTextChange}
             onBlur={() => setActiveId(null)}
             onFocus={setActiveId}
