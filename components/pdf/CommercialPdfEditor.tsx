@@ -44,7 +44,8 @@ export default function CommercialPdfEditor({
       instanceRef.current = instance;
       const { UI, Core } = instance;
 
-      UI.enableFeatures([UI.Feature.ContentEdit, UI.Feature.FilledSign]);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      UI.enableFeatures([UI.Feature.ContentEdit, (UI.Feature as any).FilledSign]);
       UI.setToolbarGroup("toolbarGroup-Edit");
       UI.disableElements([
         "toolbarGroup-Annotate","toolbarGroup-Shapes","toolbarGroup-Insert",
