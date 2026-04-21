@@ -111,13 +111,8 @@ class S3StorageProvider implements StorageProvider {
     if (this.publicUrl) {
       return `${this.publicUrl}/${key}`;
     }
-    const { GetObjectCommand } = loadS3();
-    const { getSignedUrl } = loadPresigner();
-    return getSignedUrl(
-      this.client,
-      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
-      { expiresIn: 3600 }
-    );
+    // Proxy through our own API to avoid CORS issues with direct R2 presigned URLs
+    return `/api/files/${encodeURIComponent(key)}`;
   }
 
   // ── Server-side read (used by PDF export) ─────────────────────────────────
