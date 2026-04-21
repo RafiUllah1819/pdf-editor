@@ -3,7 +3,8 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { useRef, useState } from "react";
 import { getDb } from "@/lib/db";
-import { getAllDocuments } from "@/server/documents";
+import { getDocumentsByUserId } from "@/server/documents";
+import { getSession } from "@/lib/session";
 import { formatDate, formatBytes } from "@/lib/utils";
 import { AlertBanner, EmptyState, Spinner } from "@/components/ui";
 import type { Document } from "@/types";
@@ -14,25 +15,37 @@ import type { Document } from "@/types";
 
 type Props = {
   documents: Document[];
+  userEmail: string | null;
   dbError?: string;
 };
 
-export default function DashboardPage({ documents, dbError }: Props) {
+export default function DashboardPage({ documents, userEmail, dbError }: Props) {
   const router = useRouter();
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">My Documents</h1>
-          {!dbError && (
+          <h1 className="text-2xl font-bold text-gray-900">
+            {userEmail ? "My Documents" : "PDF Editor"}
+          </h1>
+          {userEmail && !dbError && (
             <p className="mt-1 text-sm text-gray-500">
               {documents.length === 0
                 ? "No documents yet"
                 : `${documents.length} document${documents.length !== 1 ? "s" : ""}`}
             </p>
           )}
+          {!userEmail && (
+            <p className="mt-1 text-sm text-gray-500">Upload a PDF to edit and download it.</p>
+          )}
         </div>
+        {userEmail && (
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:block text-xs text-gray-500">{userEmail}</span>
+            <LogoutButton />
+          </div>
+        )}
       </div>
 
       {dbError && (
@@ -43,11 +56,21 @@ export default function DashboardPage({ documents, dbError }: Props) {
         </div>
       )}
 
+      {/* Upload form — available to everyone */}
       {!dbError && (
-        <UploadForm onSuccess={() => router.replace(router.asPath)} />
+        <UploadForm onSuccess={(docId) => router.push(`/editor-sdk/${docId}`)} />
       )}
 
-      {!dbError && documents.length > 0 && (
+      {/* Anonymous hint */}
+      {!userEmail && !dbError && (
+        <p className="mt-3 text-center text-xs text-gray-400">
+          <Link href="/login" className="text-indigo-500 hover:underline">Sign in</Link>
+          {" "}to save your documents and access them later.
+        </p>
+      )}
+
+      {/* Logged-in: show their documents */}
+      {userEmail && !dbError && documents.length > 0 && (
         <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {documents.map((doc) => (
             <DocumentCard key={doc.id} doc={doc} />
@@ -55,7 +78,7 @@ export default function DashboardPage({ documents, dbError }: Props) {
         </div>
       )}
 
-      {!dbError && documents.length === 0 && (
+      {userEmail && !dbError && documents.length === 0 && (
         <EmptyState
           icon={
             <svg className="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -71,13 +94,34 @@ export default function DashboardPage({ documents, dbError }: Props) {
   );
 }
 
+function LogoutButton() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogout() {
+    setLoading(true);
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.replace("/dashboard");
+  }
+
+  return (
+    <button
+      onClick={handleLogout}
+      disabled={loading}
+      className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50"
+    >
+      {loading ? "Signing out…" : "Sign out"}
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Upload form — supports click-to-browse and drag-and-drop
 // ---------------------------------------------------------------------------
 
 const MAX_MB = 20;
 
-type UploadFormProps = { onSuccess: () => void };
+type UploadFormProps = { onSuccess: (docId: string) => void };
 
 function UploadForm({ onSuccess }: UploadFormProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -119,7 +163,7 @@ function UploadForm({ onSuccess }: UploadFormProps) {
       if (!res.ok) throw new Error((data as { error?: string }).error ?? "Upload failed.");
       setSelectedFile(null);
       if (inputRef.current) inputRef.current.value = "";
-      onSuccess();
+      onSuccess((data as { document: { id: string } }).document.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     } finally {
@@ -248,12 +292,20 @@ function DocumentCard({ doc }: { doc: Document }) {
 // Server-side data fetching + auth guard
 // ---------------------------------------------------------------------------
 
-export const getServerSideProps: GetServerSideProps<Props> = async () => {
+export const getServerSideProps: GetServerSideProps<Props> = async ({ req, res }) => {
+  const session = await getSession(req, res);
+  const userEmail = session.user?.email ?? null;
+  const userId = session.user?.id ?? null;
+
+  if (!userId) {
+    return { props: { documents: [], userEmail: null } };
+  }
+
   try {
-    const documents = await getAllDocuments(getDb());
-    return { props: { documents } };
+    const documents = await getDocumentsByUserId(getDb(), userId);
+    return { props: { documents, userEmail } };
   } catch (err) {
     const dbError = err instanceof Error ? err.message : "Could not connect to database";
-    return { props: { documents: [], dbError } };
+    return { props: { documents: [], userEmail, dbError } };
   }
 };

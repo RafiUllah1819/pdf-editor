@@ -124,23 +124,43 @@ export default function CommercialPdfEditor({
   }, []);
 
   // Commit any in-progress text-box edit before reading PDF bytes.
-  // ContentEdit holds changes in a live HTML element until the box is
-  // deselected — endContentEditMode() flushes them to the PDF document.
+  // Deselect the active text box so its live DOM edits are flushed into the PDF.
+  // Calling deselectAllAnnotations() via Apryse's own API is more reliable than
+  // trying to blur elements inside the cross-origin iframe directly.
+  const flushActiveBox = useCallback(async () => {
+    const instance = instanceRef.current;
+    if (!instance) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (instance.Core as any).annotationManager.deselectAllAnnotations();
+    await new Promise(r => setTimeout(r, 200));
+  }, []);
+
+  const handleApplyChanges = useCallback(async () => {
+    await flushActiveBox();
+    setEditingBox(false);
+  }, [flushActiveBox]);
+
   const commitEdits = useCallback(async (): Promise<Uint8Array> => {
     const instance = instanceRef.current!;
     const { Core } = instance;
     const cem = Core.documentViewer.getContentEditManager();
+
     if (cem.isInContentEditMode()) {
+      // Flush the active text box first, then end the mode to write all
+      // content edits into the underlying PDF document object.
+      await flushActiveBox();
       cem.endContentEditMode();
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 300));
     }
+
     const bytes = await getDocumentBytes(instance);
+
     // Re-enter edit mode so the user can keep editing after save/download
     if (!cem.isInContentEditMode()) {
       await cem.startContentEditMode().catch(() => {});
     }
     return bytes;
-  }, []);
+  }, [flushActiveBox]);
 
   const handleDownload = useCallback(async () => {
     const instance = instanceRef.current;
@@ -202,8 +222,22 @@ export default function CommercialPdfEditor({
           {title}
         </span>
 
+        {/* Apply Changes — visible only while a text box is actively being edited */}
+        {editingBox && (
+          <button
+            onClick={handleApplyChanges}
+            title="Confirm edits so they are included in Save / Download"
+            className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 transition-colors animate-pulse"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            Apply Changes
+          </button>
+        )}
+
         {/* Expand text box width button — always visible in ready state */}
-        {editStatus === "ready" && (
+        {editStatus === "ready" && !editingBox && (
           <button
             onClick={handleExpandBox}
             title="Expand the width of the selected text block so text has more room"
@@ -220,7 +254,7 @@ export default function CommercialPdfEditor({
         {/* Status badge */}
         <div className="hidden sm:flex items-center">
           {editStatus === "loading" && <span className="text-xs text-gray-400">Loading…</span>}
-          {editStatus === "ready"   && <span className="text-xs text-green-600 font-medium">✓ Click any text to edit</span>}
+          {editStatus === "ready" && !editingBox && <span className="text-xs text-green-600 font-medium">✓ Click any text to edit</span>}
           {editStatus === "no-text" && <span className="text-xs text-yellow-600 font-medium">⚠ No editable text found</span>}
           {editStatus === "failed"  && <span className="text-xs text-red-600 font-medium">✗ Editor failed</span>}
         </div>

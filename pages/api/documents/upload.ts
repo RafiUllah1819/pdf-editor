@@ -5,6 +5,7 @@ import { getStorage } from "@/lib/storage";
 import { getDb, withTransaction } from "@/lib/db";
 import { createDocument } from "@/server/documents";
 import { createVersion } from "@/server/documentVersions";
+import { getSessionUser } from "@/lib/session";
 import { generateId, stripPdfExtension } from "@/lib/utils";
 import type { Document } from "@/types";
 
@@ -21,6 +22,9 @@ export default async function handler(
 ) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
+  // Attach user_id if logged in; anonymous uploads are allowed (null user_id)
+  const sessionUser = await getSessionUser(req, res);
+
   let tempPath: string | null = null;
 
   try {
@@ -33,7 +37,7 @@ export default async function handler(
 
     const document = await withTransaction(async (client) => {
       const doc = await createDocument(client, {
-        userId:       null,
+        userId:       sessionUser?.id ?? null,
         title:        stripPdfExtension(upload.originalName),
         originalName: upload.originalName,
         filePath:     key,

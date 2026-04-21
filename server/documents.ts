@@ -28,6 +28,18 @@ export async function getAllDocuments(
   return rows.map(toDocument);
 }
 
+/** Returns documents belonging to a specific user, newest first. */
+export async function getDocumentsByUserId(
+  db: Pool | PoolClient,
+  userId: string
+): Promise<Document[]> {
+  const { rows } = await db.query(
+    "SELECT * FROM documents WHERE user_id = $1 ORDER BY updated_at DESC",
+    [userId]
+  );
+  return rows.map(toDocument);
+}
+
 /** Fetch a single document by ID. Returns null if not found. */
 export async function getDocumentById(
   db: Pool | PoolClient,
