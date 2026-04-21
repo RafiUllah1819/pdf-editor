@@ -6,8 +6,8 @@ import { getLatestVersion } from "@/server/documentVersions";
 import { getStorage } from "@/lib/storage";
 import type { Document } from "@/types";
 
-const CommercialPdfEditor = dynamic(
-  () => import("@/components/pdf/CommercialPdfEditor"),
+const FreeTextEditor = dynamic(
+  () => import("@/components/pdf/FreeTextEditor"),
   {
     ssr: false,
     loading: () => (
@@ -30,11 +30,10 @@ type Props = {
 export default function SdkEditorPage({ document, fileUrl }: Props) {
   return (
     <div className="h-screen flex flex-col">
-      <CommercialPdfEditor
+      <FreeTextEditor
         documentId={document.id}
         pdfUrl={fileUrl}
         title={document.title}
-        versionNum={document.latestVersionNum}
       />
     </div>
   );
