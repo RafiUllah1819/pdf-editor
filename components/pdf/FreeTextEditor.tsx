@@ -19,6 +19,7 @@ type Edit = {
   // PDF position (pt) — for pdf-lib export
   px: number; py: number; pw: number; ph: number;
   fontSize: number; // PDF points
+  fontName: string; // raw PDF font name e.g. "ABCDEF+Arial-BoldMT"
   originalText: string;
   text: string;
 };
@@ -27,6 +28,53 @@ type Edit = {
 
 const SCALE = 1.5;
 const HIT_PAD = 6;
+
+// ── Font detection ────────────────────────────────────────────────────────────
+
+// PDF font names look like "ABCDEF+TimesNewRoman-BoldItalic" or "Helvetica"
+function normFont(name: string) {
+  return name.replace(/^[A-Z]{6}\+/, "").toLowerCase();
+}
+
+function isBold(name: string)    { const n = normFont(name); return n.includes("bold") || n.includes("heavy") || n.includes("black"); }
+function isItalic(name: string)  { const n = normFont(name); return n.includes("italic") || n.includes("oblique"); }
+function isSerif(name: string)   { const n = normFont(name); return n.includes("times") || n.includes("georgia") || n.includes("palatino") || n.includes("garamond") || n.includes("serif"); }
+function isMono(name: string)    { const n = normFont(name); return n.includes("courier") || n.includes("mono") || n.includes("consol") || n.includes("code"); }
+
+/** CSS font-family string derived from the PDF font name */
+export function cssFontFamily(fontName: string): string {
+  if (isMono(fontName))  return "Courier New, Courier, monospace";
+  if (isSerif(fontName)) return "Times New Roman, Times, serif";
+  return "Arial, Helvetica, sans-serif";
+}
+
+/** CSS font-weight */
+export function cssFontWeight(fontName: string): string {
+  return isBold(fontName) ? "bold" : "normal";
+}
+
+/** CSS font-style */
+export function cssFontStyle(fontName: string): string {
+  return isItalic(fontName) ? "italic" : "normal";
+}
+
+/** Closest pdf-lib StandardFont for this PDF font */
+async function pdfLibFont(fontName: string, doc: { embedFont: (f: string) => Promise<unknown> }) {
+  const { StandardFonts } = await import("pdf-lib");
+  const bold   = isBold(fontName);
+  const italic = isItalic(fontName);
+  const mono   = isMono(fontName);
+  const serif  = isSerif(fontName);
+
+  let key: string;
+  if (mono)        key = bold ? StandardFonts.CourierBold : italic ? StandardFonts.CourierOblique : StandardFonts.Courier;
+  else if (serif)  key = bold ? (italic ? StandardFonts.TimesRomanBoldItalic : StandardFonts.TimesRomanBold)
+                               : (italic ? StandardFonts.TimesRomanItalic     : StandardFonts.TimesRoman);
+  else             key = bold ? (italic ? StandardFonts.HelveticaBoldOblique  : StandardFonts.HelveticaBold)
+                               : (italic ? StandardFonts.HelveticaOblique      : StandardFonts.Helvetica);
+
+  return doc.embedFont(key);
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -91,7 +139,10 @@ function AutoInput({
         aria-hidden
         style={{
           position: "absolute", visibility: "hidden", whiteSpace: "nowrap",
-          fontSize: cssFontSize, fontFamily: "Helvetica, Arial, sans-serif",
+          fontSize: cssFontSize,
+          fontFamily: cssFontFamily(edit.fontName),
+          fontWeight: cssFontWeight(edit.fontName),
+          fontStyle: cssFontStyle(edit.fontName),
           pointerEvents: "none",
         }}
       >
@@ -110,7 +161,9 @@ function AutoInput({
           minWidth: edit.sw,
           padding: "0 2px",
           fontSize: cssFontSize,
-          fontFamily: "Helvetica, Arial, sans-serif",
+          fontFamily: cssFontFamily(edit.fontName),
+          fontWeight: cssFontWeight(edit.fontName),
+          fontStyle: cssFontStyle(edit.fontName),
           background: "white",
           border: "2px solid #6366f1",
           outline: "none",
@@ -201,7 +254,9 @@ function PdfPage({ pdfDoc, pageNum, edits, activeId, onPageClick, onTextChange, 
                 marginTop: OVERLAY_MARGIN_TOP,
                 minWidth: edit.sw,
                 fontSize: edit.fontSize * SCALE * FONT_SCALE,
-                fontFamily: "Helvetica, Arial, sans-serif",
+                fontFamily: cssFontFamily(edit.fontName),
+                fontWeight: cssFontWeight(edit.fontName),
+                fontStyle: cssFontStyle(edit.fontName),
                 background: "white",
                 border: "1px solid #a5b4fc",
                 cursor: "text",
@@ -291,6 +346,7 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
       pw: item.width,
       ph: fontSize * 1.2,
       fontSize,
+      fontName: item.fontName ?? "",
       originalText: item.str,
       text: item.str,
     };
@@ -310,15 +366,24 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
   // ── Build modified PDF ────────────────────────────────────────────────────
 
   const buildPdf = useCallback(async (): Promise<Uint8Array> => {
-    const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+    const { PDFDocument, rgb } = await import("pdf-lib");
     const src = pdfBytesRef.current!;
     const doc = await PDFDocument.load(src);
-    const font = await doc.embedFont(StandardFonts.Helvetica);
+
+    // Cache embedded fonts by font-key to avoid re-embedding the same font
+    const fontCache = new Map<string, Awaited<ReturnType<typeof doc.embedFont>>>();
+    const getFont = async (fontName: string) => {
+      const key = normFont(fontName) + (isBold(fontName) ? "-b" : "") + (isItalic(fontName) ? "-i" : "") + (isMono(fontName) ? "-m" : "") + (isSerif(fontName) ? "-s" : "");
+      if (!fontCache.has(key)) fontCache.set(key, await pdfLibFont(fontName, doc) as Awaited<ReturnType<typeof doc.embedFont>>);
+      return fontCache.get(key)!;
+    };
 
     const changed = edits.filter(e => e.text !== e.originalText);
     for (const edit of changed) {
       const page = doc.getPages()[edit.pageNum - 1];
-      const textW = Math.max(edit.pw, font.widthOfTextAtSize(edit.text, edit.fontSize) + 4);
+      const font = await getFont(edit.fontName);
+      const drawSize = edit.fontSize - PDF_FONT_REDUCE;
+      const textW = Math.max(edit.pw, font.widthOfTextAtSize(edit.text, drawSize) + 4);
 
       // Cover original text with white box
       page.drawRectangle({
@@ -330,11 +395,11 @@ export default function FreeTextEditor({ documentId, pdfUrl, title }: Props) {
         borderWidth: 0,
       });
 
-      // Draw new text
+      // Draw new text with matched font
       page.drawText(edit.text, {
         x: edit.px,
         y: edit.py - edit.fontSize * 0.05,
-        size: edit.fontSize - PDF_FONT_REDUCE,
+        size: drawSize,
         font,
         color: rgb(0, 0, 0),
       });
